@@ -1,49 +1,71 @@
 import argparse
+import numpy as np
+import matplotlib.pyplot as plt
 
-from utils import DEFAULT_MODEL_PATH, load_digit_image, resolve_project_path
+from tensorflow.keras.models import load_model
+from utils import preprocess_digit_image
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Predict a handwritten digit from an image.")
-    parser.add_argument("--image", required=True, help="Path to a PNG/JPG image containing one digit.")
-    parser.add_argument(
-        "--model-path",
-        default=str(DEFAULT_MODEL_PATH.relative_to(DEFAULT_MODEL_PATH.parents[1])),
-        help="Path to the trained .keras model.",
+def predict_digit(image_path, model_path, invert=False):
+    """
+    Load a trained MNIST CNN model and predict the digit from an image.
+    """
+
+    print("Loading model from:", model_path)
+
+    model = load_model(model_path)
+
+    processed_image, display_image = preprocess_digit_image(
+        image_path=image_path,
+        invert=invert
     )
-    parser.add_argument(
-        "--invert",
-        action="store_true",
-        help="Invert image colors for black digits on white backgrounds.",
-    )
-    return parser.parse_args()
+
+    prediction = model.predict(processed_image)
+
+    predicted_digit = int(np.argmax(prediction))
+    confidence = float(np.max(prediction))
+
+    print("Predicted Digit:", predicted_digit)
+    print("Confidence:", round(confidence, 4))
+
+    plt.imshow(display_image, cmap="gray")
+    plt.title(f"Predicted Digit: {predicted_digit} | Confidence: {confidence:.4f}")
+    plt.axis("off")
+    plt.show()
+
+    return predicted_digit, confidence
 
 
 def main():
-    args = parse_args()
+    parser = argparse.ArgumentParser(
+        description="Predict handwritten digit from an image using trained MNIST CNN model."
+    )
 
-    import numpy as np
-    from tensorflow.keras.models import load_model
+    parser.add_argument(
+        "--image",
+        required=True,
+        help="Path to input digit image."
+    )
 
-    model_path = resolve_project_path(args.model_path)
-    image_path = resolve_project_path(args.image)
+    parser.add_argument(
+        "--model",
+        default="models/mnist_cnn_model.keras",
+        help="Path to trained Keras model."
+    )
 
-    if not model_path.exists():
-        raise FileNotFoundError(
-            f"Model file not found: {model_path}\n"
-            "Train the model first with: python3 src/train.py"
-        )
+    parser.add_argument(
+        "--invert",
+        action="store_true",
+        help="Invert image colors. Use this for black digit on white background."
+    )
 
-    print(f"Loading model from: {model_path}")
-    model = load_model(model_path)
+    args = parser.parse_args()
 
-    image_array = load_digit_image(image_path, invert=args.invert)
-    probabilities = model.predict(image_array, verbose=0)[0]
-    predicted_digit = int(np.argmax(probabilities))
-    confidence = float(probabilities[predicted_digit])
-
-    print(f"Predicted Digit: {predicted_digit}")
-    print(f"Confidence: {confidence:.4f}")
+    predict_digit(
+        image_path=args.image,
+        model_path=args.model,
+        invert=args.invert
+    )
 
 
 if __name__ == "__main__":

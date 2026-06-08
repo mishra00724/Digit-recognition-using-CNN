@@ -1,108 +1,179 @@
-import argparse
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
 
-from utils import (
-    DEFAULT_MODEL_PATH,
-    DEFAULT_RESULTS_DIR,
-    build_mnist_cnn,
-    ensure_directory,
-    prepare_mnist_data,
-    resolve_project_path,
-    save_evaluation_outputs,
-    save_training_curves,
-    save_training_history,
-)
+from tensorflow.keras.datasets import mnist
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPool2D, Flatten, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Train and evaluate a CNN for MNIST handwritten digit classification."
+def build_model():
+    """
+    Build and return the CNN model for MNIST digit classification.
+    """
+
+    model = Sequential()
+
+    model.add(
+        Conv2D(
+            filters=32,
+            kernel_size=(4, 4),
+            activation="relu",
+            input_shape=(28, 28, 1)
+        )
     )
-    parser.add_argument("--epochs", type=int, default=10, help="Maximum training epochs.")
-    parser.add_argument("--batch-size", type=int, default=128, help="Training batch size.")
-    parser.add_argument(
-        "--model-path",
-        default=str(DEFAULT_MODEL_PATH.relative_to(DEFAULT_MODEL_PATH.parents[1])),
-        help="Where to save the trained .keras model.",
+
+    model.add(MaxPool2D(pool_size=(2, 2)))
+
+    model.add(Flatten())
+
+    model.add(Dense(128, activation="relu"))
+
+    model.add(Dropout(0.3))
+
+    model.add(Dense(10, activation="softmax"))
+
+    model.compile(
+        loss="categorical_crossentropy",
+        optimizer="adam",
+        metrics=["accuracy"]
     )
-    parser.add_argument(
-        "--results-dir",
-        default=str(DEFAULT_RESULTS_DIR.relative_to(DEFAULT_RESULTS_DIR.parents[0])),
-        help="Directory where evaluation outputs are saved.",
-    )
-    parser.add_argument(
-        "--validation-size",
-        type=float,
-        default=0.1,
-        help="Fraction of the training data reserved for validation.",
-    )
-    parser.add_argument(
-        "--patience",
-        type=int,
-        default=2,
-        help="Early stopping patience based on validation loss.",
-    )
-    parser.add_argument("--random-seed", type=int, default=42, help="Random seed for the split.")
-    return parser.parse_args()
+
+    return model
 
 
 def main():
-    args = parse_args()
+    """
+    Train the CNN model on MNIST dataset and save outputs.
+    """
 
-    import numpy as np
-    from tensorflow.keras.callbacks import EarlyStopping
+    os.makedirs("models", exist_ok=True)
+    os.makedirs("results", exist_ok=True)
 
-    model_path = resolve_project_path(args.model_path)
-    results_dir = resolve_project_path(args.results_dir)
-    ensure_directory(model_path.parent)
-    ensure_directory(results_dir)
+    print("Loading MNIST dataset...")
 
-    print("Loading and preprocessing MNIST data...")
-    x_train, x_val, x_test, y_train, y_val, y_test_cat, y_test = prepare_mnist_data(
-        validation_size=args.validation_size,
-        random_state=args.random_seed,
+    (x_train, y_train), (x_test, y_test) = mnist.load_data()
+
+    print("Training images shape:", x_train.shape)
+    print("Testing images shape:", x_test.shape)
+
+    # Reshape images for CNN input: (samples, height, width, channels)
+    x_train = x_train.reshape(-1, 28, 28, 1).astype("float32")
+    x_test = x_test.reshape(-1, 28, 28, 1).astype("float32")
+
+    # Normalize pixel values from 0-255 to 0-1
+    x_train = x_train / 255.0
+    x_test = x_test / 255.0
+
+    # One-hot encode labels
+    y_cat_train = to_categorical(y_train, num_classes=10)
+    y_cat_test = to_categorical(y_test, num_classes=10)
+
+    # Create validation split from training data
+    x_train_final, x_valid, y_train_final, y_valid = train_test_split(
+        x_train,
+        y_cat_train,
+        test_size=0.2,
+        random_state=22,
+        stratify=y_train
     )
 
-    print("Building CNN model...")
-    model = build_mnist_cnn()
+    print("Training split:", x_train_final.shape)
+    print("Validation split:", x_valid.shape)
+    print("Test split:", x_test.shape)
+
+    model = build_model()
+
+    print("Model architecture:")
     model.summary()
 
-    early_stopping = EarlyStopping(
+    early_stop = EarlyStopping(
         monitor="val_loss",
-        patience=args.patience,
-        restore_best_weights=True,
+        patience=2,
+        restore_best_weights=True
     )
 
     print("Training model...")
+
     history = model.fit(
-        x_train,
-        y_train,
-        validation_data=(x_val, y_val),
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        callbacks=[early_stopping],
-        verbose=1,
+        x_train_final,
+        y_train_final,
+        epochs=10,
+        batch_size=128,
+        validation_data=(x_valid, y_valid),
+        callbacks=[early_stop]
     )
 
-    print("Evaluating on the separate MNIST test set...")
-    test_loss, test_accuracy = model.evaluate(x_test, y_test_cat, verbose=0)
-    print(f"Test Loss: {test_loss:.4f}")
-    print(f"Test Accuracy: {test_accuracy:.4f}")
+    # Save training history
+    history_df = pd.DataFrame(history.history)
+    history_df.to_csv("results/training_history.csv", index=False)
 
-    probabilities = model.predict(x_test, verbose=0)
-    y_pred = np.argmax(probabilities, axis=1)
+    # Plot loss curve
+    history_df[["loss", "val_loss"]].plot(figsize=(8, 5))
+    plt.title("Training Loss vs Validation Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.grid(True)
+    plt.savefig("results/loss_curve.png", bbox_inches="tight")
+    plt.close()
 
-    print("Saving model and evaluation outputs...")
-    model.save(model_path)
-    history_path = save_training_history(history, results_dir)
-    loss_path, accuracy_path = save_training_curves(history, results_dir)
-    report_path, matrix_path = save_evaluation_outputs(y_test, y_pred, results_dir)
+    # Plot accuracy curve
+    history_df[["accuracy", "val_accuracy"]].plot(figsize=(8, 5))
+    plt.title("Training Accuracy vs Validation Accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
+    plt.grid(True)
+    plt.savefig("results/accuracy_curve.png", bbox_inches="tight")
+    plt.close()
 
-    print(f"Saved model: {model_path}")
-    print(f"Saved training history: {history_path}")
-    print(f"Saved loss curve: {loss_path}")
-    print(f"Saved accuracy curve: {accuracy_path}")
-    print(f"Saved classification report: {report_path}")
-    print(f"Saved confusion matrix: {matrix_path}")
+    print("Evaluating model on test set...")
+
+    test_loss, test_accuracy = model.evaluate(x_test, y_cat_test)
+
+    print("Test Loss:", test_loss)
+    print("Test Accuracy:", test_accuracy)
+
+    # Generate predictions
+    y_pred_probs = model.predict(x_test)
+    y_pred_classes = np.argmax(y_pred_probs, axis=1)
+
+    # Save classification report
+    report = classification_report(y_test, y_pred_classes)
+
+    with open("results/classification_report.txt", "w") as file:
+        file.write(report)
+
+    print("Classification Report:")
+    print(report)
+
+    # Confusion matrix
+    cm = confusion_matrix(y_test, y_pred_classes)
+
+    plt.figure(figsize=(8, 6))
+    plt.imshow(cm, cmap="Blues")
+    plt.title("Confusion Matrix")
+    plt.xlabel("Predicted Label")
+    plt.ylabel("True Label")
+    plt.colorbar()
+
+    for i in range(10):
+        for j in range(10):
+            plt.text(j, i, cm[i, j], ha="center", va="center")
+
+    plt.savefig("results/confusion_matrix.png", bbox_inches="tight")
+    plt.close()
+
+    # Save trained model
+    model.save("models/mnist_cnn_model.keras")
+
+    print("Model saved at: models/mnist_cnn_model.keras")
+    print("Training results saved in: results/")
 
 
 if __name__ == "__main__":
